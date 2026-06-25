@@ -488,8 +488,10 @@ async function probeSequentialCards() {
   const extensions = ["jpg", "png", "webp", "jpeg"];
   const candidates = [];
 
-  for (let index = 1; index <= 40; index += 1) {
+  for (let index = 1; index <= 120; index += 1) {
+    const paddedIndex = String(index).padStart(3, "0");
     extensions.forEach((extension) => {
+      candidates.push(`cards/card_${paddedIndex}.${extension}`);
       candidates.push(`cards/card-${index}.${extension}`);
     });
   }
@@ -512,7 +514,7 @@ async function loadOracleCards() {
     manifestCards = [];
   }
 
-  const probedCards = manifestCards.length > 0 ? [] : await probeSequentialCards();
+  const probedCards = await probeSequentialCards();
   oracleCards = Array.from(new Set([...manifestCards, ...probedCards]));
   renderStoredDailyOracleCard();
 }
@@ -554,6 +556,12 @@ function getTodayOracleCard() {
 
 function renderOracleCardImage(cardPath) {
   const hasCard = Boolean(cardPath);
+  const textTargets = [
+    checkinEls.inlineQuote,
+    checkinEls.inlineCopyButton,
+    checkinEls.modalQuote,
+    checkinEls.modalCopyButton,
+  ];
   const imageTargets = [
     {
       wrap: document.getElementById("inline-oracle-image-wrap"),
@@ -572,6 +580,12 @@ function renderOracleCardImage(cardPath) {
       image.src = cardPath;
     } else {
       image.removeAttribute("src");
+    }
+  });
+
+  textTargets.forEach((element) => {
+    if (element) {
+      element.hidden = hasCard;
     }
   });
 }
@@ -593,8 +607,8 @@ function updateCheckinState() {
 
   checkinEls.inlineQuote.textContent = `"${quote}"`;
   renderStoredDailyOracleCard();
-  checkinEls.button.disabled = checked;
-  checkinEls.button.textContent = checked ? "Checked in today" : "Begin 3 breaths";
+  checkinEls.button.disabled = false;
+  checkinEls.button.textContent = checked ? "View Today's Oracle" : "Begin 3 breaths";
   checkinEls.status.textContent = checked
     ? "Today's ritual is complete. Return tomorrow for a new oracle."
     : "A short pause before impulse becomes action.";

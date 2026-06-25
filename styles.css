@@ -628,12 +628,12 @@ button:disabled {
 .oracle-image-wrap img {
   display: block;
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 2 / 3;
   object-fit: cover;
 }
 
 .modal-oracle-image-wrap {
-  width: min(240px, 70vw);
+  width: min(420px, 82vw);
   margin: 22px auto 0;
 }
 
@@ -938,8 +938,16 @@ textarea:focus {
 
 .oracle-modal {
   position: relative;
+  width: min(96vw, 620px);
   padding: 34px 24px 28px;
   border-color: rgba(216, 168, 74, 0.34);
+}
+
+.modal-oracle-image-wrap img {
+  aspect-ratio: auto;
+  max-height: min(72vh, 760px);
+  object-fit: contain;
+  background: #080808;
 }
 
 .oracle-modal blockquote {
