@@ -514,7 +514,7 @@ async function loadOracleCards() {
     manifestCards = [];
   }
 
-  const probedCards = await probeSequentialCards();
+  const probedCards = manifestCards.length > 0 ? [] : await probeSequentialCards();
   oracleCards = Array.from(new Set([...manifestCards, ...probedCards]));
   renderStoredDailyOracleCard();
 }
@@ -1438,6 +1438,7 @@ if (timerEls.days) {
 }
 
 if (checkinEls.button) {
+  oracleCardsReady = loadOracleCards();
   updateCheckinState();
 }
 
@@ -1451,4 +1452,3 @@ if (journalEls.entries) {
   renderJournalEntries();
 }
 
-oracleCardsReady = loadOracleCards();
