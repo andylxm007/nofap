@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   oracleDailyCard: "emberDiscipline.oracleDailyCard",
   ownerArticles: "emberDiscipline.ownerArticles",
   journalEntries: "emberDiscipline.journalEntries",
+  audioState: "emberDiscipline.audioState",
 };
 
 // EN: Set this in code when you are ready to show ad containers.
@@ -155,6 +156,8 @@ let sanctuaryAudioContext = null;
 let masterGain = null;
 const activeSynths = new Map();
 const generatedAudioUrls = new Map();
+const runtimeAudioElements = {};
+let audioRestoreBlocked = false;
 let oracleCards = [];
 let oracleCardsReady = Promise.resolve();
 
@@ -712,7 +715,7 @@ function getSanctuaryAudioContext() {
   if (!sanctuaryAudioContext) {
     sanctuaryAudioContext = new AudioConstructor();
     masterGain = sanctuaryAudioContext.createGain();
-    masterGain.gain.value = Number(audioEls.volume.value) / 100;
+    masterGain.gain.value = getAudioVolumeValue() / 100;
     masterGain.connect(sanctuaryAudioContext.destination);
   }
 
@@ -722,8 +725,80 @@ function getSanctuaryAudioContext() {
 function setMasterVolume() {
   if (!masterGain || !sanctuaryAudioContext) return;
 
-  const volume = Number(audioEls.volume.value) / 100;
+  const volume = getAudioVolumeValue() / 100;
   masterGain.gain.setTargetAtTime(volume, sanctuaryAudioContext.currentTime, 0.08);
+}
+
+function getStoredAudioState() {
+  return readJsonStorage(STORAGE_KEYS.audioState, {
+    activeChannels: [],
+    volume: 45,
+    sources: {},
+    times: {},
+  });
+}
+
+function getAudioVolumeValue() {
+  if (audioEls.volume) {
+    return Number(audioEls.volume.value);
+  }
+
+  const storedState = getStoredAudioState();
+  return Number.isFinite(storedState.volume) ? storedState.volume : 45;
+}
+
+function getChannelSource(channel) {
+  const htmlAudio = audioEls.htmlAudio[channel];
+  const domSource = htmlAudio ? htmlAudio.getAttribute("src") : "";
+  const storedState = getStoredAudioState();
+  return domSource || storedState.sources?.[channel] || "";
+}
+
+function getRuntimeAudioElement(channel, source = "") {
+  const existingAudio = audioEls.htmlAudio[channel] || runtimeAudioElements[channel];
+
+  if (existingAudio) {
+    if (source && !existingAudio.getAttribute("src")) {
+      existingAudio.src = source;
+    }
+    return existingAudio;
+  }
+
+  if (!source) return null;
+
+  const audio = new Audio(source);
+  audio.loop = true;
+  audio.preload = "none";
+  runtimeAudioElements[channel] = audio;
+  return audio;
+}
+
+function persistAudioState() {
+  const storedState = getStoredAudioState();
+  const sources = { ...storedState.sources };
+  const times = { ...storedState.times };
+
+  Object.entries(audioEls.htmlAudio).forEach(([channel, audio]) => {
+    if (!audio) return;
+    const source = audio.getAttribute("src");
+    if (source) sources[channel] = source;
+    if (Number.isFinite(audio.currentTime)) times[channel] = audio.currentTime;
+  });
+
+  Object.entries(runtimeAudioElements).forEach(([channel, audio]) => {
+    if (!audio) return;
+    const source = audio.getAttribute("src");
+    if (source) sources[channel] = source;
+    if (Number.isFinite(audio.currentTime)) times[channel] = audio.currentTime;
+  });
+
+  writeJsonStorage(STORAGE_KEYS.audioState, {
+    activeChannels: audioRestoreBlocked && activeSynths.size === 0 ? storedState.activeChannels : Array.from(activeSynths.keys()),
+    volume: getAudioVolumeValue(),
+    sources,
+    times,
+    updatedAt: Date.now(),
+  });
 }
 
 function writeString(view, offset, value) {
@@ -973,30 +1048,33 @@ async function toggleAudioChannel(channel) {
     activeSynths.get(channel)();
     activeSynths.delete(channel);
     updateAudioButtonState(channel, false);
+    persistAudioState();
     return;
   }
 
-  const htmlAudio = audioEls.htmlAudio[channel];
+  const htmlAudio = getRuntimeAudioElement(channel, getChannelSource(channel));
 
   if (htmlAudio && htmlAudio.getAttribute("src")) {
-    htmlAudio.volume = Number(audioEls.volume.value) / 100;
+    htmlAudio.volume = getAudioVolumeValue() / 100;
     activeSynths.set(channel, () => {
       htmlAudio.pause();
       htmlAudio.currentTime = 0;
     });
     updateAudioButtonState(channel, true);
+    persistAudioState();
     htmlAudio.play().catch(() => {
       // EN: Some automated or restricted browsers block playback despite a click.
       // CN: 某些自动化或受限浏览器即使点击后也会阻止播放。
     });
   } else if (htmlAudio && !(window.AudioContext || window.webkitAudioContext)) {
     htmlAudio.src = createGeneratedWavUrl(channel);
-    htmlAudio.volume = Number(audioEls.volume.value) / 100;
+    htmlAudio.volume = getAudioVolumeValue() / 100;
     activeSynths.set(channel, () => {
       htmlAudio.pause();
       htmlAudio.currentTime = 0;
     });
     updateAudioButtonState(channel, true);
+    persistAudioState();
     htmlAudio.play().catch(() => {
       // EN: Keep the UI responsive; real user clicks in modern browsers should play.
       // CN: 保持 UI 可响应；现代浏览器真实用户点击通常可正常播放。
@@ -1010,6 +1088,7 @@ async function toggleAudioChannel(channel) {
 
     activeSynths.set(channel, startSynthChannel(channel, context));
     updateAudioButtonState(channel, true);
+    persistAudioState();
   }
 }
 
@@ -1022,11 +1101,87 @@ function updateAudioButtonState(channel, isActive) {
 }
 
 function updateHtmlAudioVolume() {
-  const volume = Number(audioEls.volume.value) / 100;
+  const volume = getAudioVolumeValue() / 100;
   Object.values(audioEls.htmlAudio).forEach((audio) => {
     if (audio) audio.volume = volume;
   });
+  Object.values(runtimeAudioElements).forEach((audio) => {
+    if (audio) audio.volume = volume;
+  });
   setMasterVolume();
+  persistAudioState();
+}
+
+function showAudioResumePrompt() {
+  if (document.getElementById("persistent-audio-resume")) return;
+
+  const button = document.createElement("button");
+  button.id = "persistent-audio-resume";
+  button.className = "persistent-audio-resume";
+  button.type = "button";
+  button.textContent = "Resume Audio";
+  button.addEventListener("click", async () => {
+    await restorePersistentAudio(true);
+  });
+  document.body.appendChild(button);
+}
+
+function hideAudioResumePrompt() {
+  document.getElementById("persistent-audio-resume")?.remove();
+}
+
+async function restorePersistentAudio(forcePrompt = false) {
+  const storedState = getStoredAudioState();
+  const channels = Array.isArray(storedState.activeChannels) ? storedState.activeChannels : [];
+
+  if (audioEls.volume && Number.isFinite(storedState.volume)) {
+    audioEls.volume.value = String(storedState.volume);
+  }
+
+  if (channels.length === 0) return;
+
+  let blockedCount = 0;
+  audioRestoreBlocked = false;
+
+  for (const channel of channels) {
+    if (activeSynths.has(channel)) continue;
+
+    const audio = getRuntimeAudioElement(channel, storedState.sources?.[channel] || "");
+    if (audio && Number.isFinite(storedState.times?.[channel]) && storedState.times[channel] > 0) {
+      try {
+        audio.currentTime = storedState.times[channel];
+      } catch (error) {
+        // EN: Some remote streams cannot resume from an exact timestamp.
+        // CN: 部分远程音频流无法从精确时间点恢复。
+      }
+    }
+
+    try {
+      await toggleAudioChannel(channel);
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+    } catch (error) {
+      blockedCount += 1;
+    }
+
+    const restoredAudio = runtimeAudioElements[channel] || audioEls.htmlAudio[channel];
+    if (restoredAudio && restoredAudio.paused) {
+      if (activeSynths.has(channel)) {
+        activeSynths.get(channel)();
+        activeSynths.delete(channel);
+        updateAudioButtonState(channel, false);
+      }
+      blockedCount += 1;
+    }
+  }
+
+  if (blockedCount > 0) {
+    audioRestoreBlocked = true;
+    showAudioResumePrompt();
+  } else {
+    audioRestoreBlocked = false;
+    hideAudioResumePrompt();
+    persistAudioState();
+  }
 }
 
 function getAdsensePublisherId() {
@@ -1424,6 +1579,7 @@ listenIfPresent(audioEls.volume, "input", updateHtmlAudioVolume);
 listenIfPresent(articleEls.save, "click", handleSaveOwnerArticle);
 listenIfPresent(journalEls.submit, "click", handleCreateJournalEntry);
 listenIfPresent(journalEls.entries, "click", handleJournalEntryClick);
+window.addEventListener("pagehide", persistAudioState);
 
 window.EmberDisciplineAudio = {
   toggle: toggleAudioChannel,
@@ -1452,3 +1608,4 @@ if (journalEls.entries) {
   renderJournalEntries();
 }
 
+restorePersistentAudio();
