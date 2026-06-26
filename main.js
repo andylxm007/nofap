@@ -158,6 +158,7 @@ const activeSynths = new Map();
 const generatedAudioUrls = new Map();
 const runtimeAudioElements = {};
 let audioRestoreBlocked = false;
+let audioPersistIntervalId = null;
 let oracleCards = [];
 let oracleCardsReady = Promise.resolve();
 
@@ -758,19 +759,88 @@ function getRuntimeAudioElement(channel, source = "") {
   const existingAudio = audioEls.htmlAudio[channel] || runtimeAudioElements[channel];
 
   if (existingAudio) {
-    if (source && !existingAudio.getAttribute("src")) {
+    if (source && !source.startsWith("blob:") && !existingAudio.getAttribute("src")) {
       existingAudio.src = source;
+      existingAudio.dataset.generatedAudio = "false";
     }
     return existingAudio;
   }
 
-  if (!source) return null;
-
-  const audio = new Audio(source);
+  const audio = new Audio(source && !source.startsWith("blob:") ? source : "");
   audio.loop = true;
   audio.preload = "none";
+  audio.dataset.generatedAudio = source ? "false" : "true";
   runtimeAudioElements[channel] = audio;
   return audio;
+}
+
+function prepareAudioElementForChannel(channel, source = "") {
+  const audio = getRuntimeAudioElement(channel, source);
+
+  if (!audio) return null;
+
+  if (source && !source.startsWith("blob:")) {
+    audio.src = source;
+    audio.dataset.generatedAudio = "false";
+  } else if (!audio.getAttribute("src") || audio.getAttribute("src").startsWith("blob:")) {
+    audio.src = createGeneratedWavUrl(channel);
+    audio.dataset.generatedAudio = "true";
+  }
+
+  audio.loop = true;
+  audio.preload = "none";
+  return audio;
+}
+
+function getSafeAudioSource(audio) {
+  if (!audio || audio.dataset.generatedAudio === "true") return "";
+
+  const source = audio.getAttribute("src") || "";
+  return source.startsWith("blob:") ? "" : source;
+}
+
+function seekAudioElement(audio, seconds) {
+  if (!audio || !Number.isFinite(seconds) || seconds <= 0) return;
+
+  const applySeek = () => {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+    const nextTime = duration ? seconds % duration : seconds;
+
+    try {
+      audio.currentTime = nextTime;
+    } catch (error) {
+      // EN: Some remote streams do not support exact seeking.
+      // CN: 部分远程音频流不支持精确定位播放进度。
+    }
+  };
+
+  if (audio.readyState >= 1) {
+    applySeek();
+  } else {
+    audio.addEventListener("loadedmetadata", applySeek, { once: true });
+  }
+}
+
+function startAudioStatePersistence() {
+  if (audioPersistIntervalId) return;
+  audioPersistIntervalId = window.setInterval(persistAudioState, 1000);
+}
+
+function stopAudioStatePersistence() {
+  if (activeSynths.size > 0 || audioRestoreBlocked) return;
+  window.clearInterval(audioPersistIntervalId);
+  audioPersistIntervalId = null;
+}
+
+function captureAudioProgress(channel, audio, times, storedState) {
+  if (!audio || !Number.isFinite(audio.currentTime)) return;
+
+  if (audioRestoreBlocked && audio.currentTime === 0 && Number.isFinite(storedState.times?.[channel])) {
+    times[channel] = storedState.times[channel];
+    return;
+  }
+
+  times[channel] = audio.currentTime;
 }
 
 function persistAudioState() {
@@ -780,16 +850,24 @@ function persistAudioState() {
 
   Object.entries(audioEls.htmlAudio).forEach(([channel, audio]) => {
     if (!audio) return;
-    const source = audio.getAttribute("src");
-    if (source) sources[channel] = source;
-    if (Number.isFinite(audio.currentTime)) times[channel] = audio.currentTime;
+    const source = getSafeAudioSource(audio);
+    if (source) {
+      sources[channel] = source;
+    } else {
+      delete sources[channel];
+    }
+    captureAudioProgress(channel, audio, times, storedState);
   });
 
   Object.entries(runtimeAudioElements).forEach(([channel, audio]) => {
     if (!audio) return;
-    const source = audio.getAttribute("src");
-    if (source) sources[channel] = source;
-    if (Number.isFinite(audio.currentTime)) times[channel] = audio.currentTime;
+    const source = getSafeAudioSource(audio);
+    if (source) {
+      sources[channel] = source;
+    } else {
+      delete sources[channel];
+    }
+    captureAudioProgress(channel, audio, times, storedState);
   });
 
   writeJsonStorage(STORAGE_KEYS.audioState, {
@@ -817,7 +895,7 @@ function createGeneratedWavUrl(channel) {
   }
 
   const sampleRate = 22050;
-  const durationSeconds = channel === "bell" || channel === "chant" ? 4 : 2;
+  const durationSeconds = channel === "bell" || channel === "chant" ? 18 : 14;
   const totalSamples = sampleRate * durationSeconds;
   const bytesPerSample = 2;
   const buffer = new ArrayBuffer(44 + totalSamples * bytesPerSample);
@@ -1043,16 +1121,17 @@ function startSynthChannel(channel, context) {
  * EN: Prefer real HTML audio if a src is provided; otherwise use local Web Audio fallback.
  * CN: 如果 <audio> 有真实 src 就播放真实音频，否则使用本地合成音效。
  */
-async function toggleAudioChannel(channel) {
+async function toggleAudioChannel(channel, resumeTime = null) {
   if (activeSynths.has(channel)) {
     activeSynths.get(channel)();
     activeSynths.delete(channel);
     updateAudioButtonState(channel, false);
     persistAudioState();
+    stopAudioStatePersistence();
     return;
   }
 
-  const htmlAudio = getRuntimeAudioElement(channel, getChannelSource(channel));
+  const htmlAudio = prepareAudioElementForChannel(channel, getChannelSource(channel));
 
   if (htmlAudio && htmlAudio.getAttribute("src")) {
     htmlAudio.volume = getAudioVolumeValue() / 100;
@@ -1060,24 +1139,13 @@ async function toggleAudioChannel(channel) {
       htmlAudio.pause();
       htmlAudio.currentTime = 0;
     });
+    seekAudioElement(htmlAudio, resumeTime);
     updateAudioButtonState(channel, true);
     persistAudioState();
-    htmlAudio.play().catch(() => {
+    startAudioStatePersistence();
+    await htmlAudio.play().catch(() => {
       // EN: Some automated or restricted browsers block playback despite a click.
       // CN: 某些自动化或受限浏览器即使点击后也会阻止播放。
-    });
-  } else if (htmlAudio && !(window.AudioContext || window.webkitAudioContext)) {
-    htmlAudio.src = createGeneratedWavUrl(channel);
-    htmlAudio.volume = getAudioVolumeValue() / 100;
-    activeSynths.set(channel, () => {
-      htmlAudio.pause();
-      htmlAudio.currentTime = 0;
-    });
-    updateAudioButtonState(channel, true);
-    persistAudioState();
-    htmlAudio.play().catch(() => {
-      // EN: Keep the UI responsive; real user clicks in modern browsers should play.
-      // CN: 保持 UI 可响应；现代浏览器真实用户点击通常可正常播放。
     });
   } else {
     const context = getSanctuaryAudioContext();
@@ -1089,6 +1157,7 @@ async function toggleAudioChannel(channel) {
     activeSynths.set(channel, startSynthChannel(channel, context));
     updateAudioButtonState(channel, true);
     persistAudioState();
+    startAudioStatePersistence();
   }
 }
 
@@ -1146,18 +1215,13 @@ async function restorePersistentAudio(forcePrompt = false) {
   for (const channel of channels) {
     if (activeSynths.has(channel)) continue;
 
-    const audio = getRuntimeAudioElement(channel, storedState.sources?.[channel] || "");
-    if (audio && Number.isFinite(storedState.times?.[channel]) && storedState.times[channel] > 0) {
-      try {
-        audio.currentTime = storedState.times[channel];
-      } catch (error) {
-        // EN: Some remote streams cannot resume from an exact timestamp.
-        // CN: 部分远程音频流无法从精确时间点恢复。
-      }
-    }
+    const savedTime = Number.isFinite(storedState.times?.[channel]) ? storedState.times[channel] : null;
+    const elapsedSinceSave =
+      savedTime !== null && Number.isFinite(storedState.updatedAt) ? Math.max(0, (Date.now() - storedState.updatedAt) / 1000) : 0;
+    const resumeTime = savedTime !== null ? savedTime + elapsedSinceSave : null;
 
     try {
-      await toggleAudioChannel(channel);
+      await toggleAudioChannel(channel, resumeTime);
       await new Promise((resolve) => window.setTimeout(resolve, 220));
     } catch (error) {
       blockedCount += 1;
@@ -1166,7 +1230,6 @@ async function restorePersistentAudio(forcePrompt = false) {
     const restoredAudio = runtimeAudioElements[channel] || audioEls.htmlAudio[channel];
     if (restoredAudio && restoredAudio.paused) {
       if (activeSynths.has(channel)) {
-        activeSynths.get(channel)();
         activeSynths.delete(channel);
         updateAudioButtonState(channel, false);
       }
@@ -1580,6 +1643,12 @@ listenIfPresent(articleEls.save, "click", handleSaveOwnerArticle);
 listenIfPresent(journalEls.submit, "click", handleCreateJournalEntry);
 listenIfPresent(journalEls.entries, "click", handleJournalEntryClick);
 window.addEventListener("pagehide", persistAudioState);
+window.addEventListener("beforeunload", persistAudioState);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    persistAudioState();
+  }
+});
 
 window.EmberDisciplineAudio = {
   toggle: toggleAudioChannel,
