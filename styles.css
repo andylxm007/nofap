@@ -215,6 +215,63 @@ button {
   animation: awakenedBreath 3.8s ease-in-out infinite;
 }
 
+.rank-guide {
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.rank-guide summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.rank-guide[open] summary {
+  color: var(--text);
+}
+
+.rank-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.rank-guide-grid p {
+  margin: 0;
+  padding: 12px;
+  background: rgba(18, 18, 18, 0.78);
+}
+
+.rank-guide-grid strong,
+.rank-guide-grid span {
+  display: block;
+}
+
+.rank-guide-grid strong {
+  color: var(--cinnabar);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rank-guide-grid span {
+  margin-top: 4px;
+  color: #ded6cf;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
 .hero-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -1117,6 +1174,10 @@ textarea:focus {
 
   .rank-rail {
     width: 100%;
+  }
+
+  .rank-guide-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .paper-surface {
